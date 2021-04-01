@@ -1,0 +1,45 @@
+This document keeps track of the design ideas that we would try to develop Fantastx_polymers 
+
+Mar 17, 2021
+---------------
+
+GOAL: To get the atomisitic structure of a polymer nanocomposite from the Neutron scattering data --
+
+i.e., S(Q) --> atomic structure
+In simple terms, obtain several 'valid' structures and get their S(Q) & compare.
+
+* valid structures --> ones relaxed with LAMMPS --> have ideal distances
+---------------
+
+To get valid structures, we need to do -
+
+(1) Structure generation (randomly/GA using FANTASTX)
+(2) Structure relaxation (LAMMPS)
+(3) Optimize the force field used with LAMMPS.
+
+Currently, 
+(1) should be developed. We need to eliminate (2) and get 'valid' structures. 
+The parameters in (3) should be left to be solved for by ML models.
+--------------
+
+Workflow: 
+
+Loop 1: 
+
+Inputs/Constraints ---> make polymer structures (Random/GA) ---> Get S(Q) & compare
+
+Variables => size, mass fraction and  distribution of NPs; chain length and number of polymers 
+
+Store good structures separately.
+
+Loop 2:
+
+Take good structures & do LAMMPS NPT followed by NVT --> Get S(Q)
+
+Variables => The parameters of the LAMMPS force field.
+
+QQ: How to optimize these force field parameters effectively?
+
+
+
+
