@@ -1,3 +1,9 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+@author: chaitanyakolluru
+"""
+
 """
 Make polymer nano-composite (PNC) structures
 
@@ -27,23 +33,35 @@ NOTE: Find how to identify the entire chain from the atom beads and then remove 
 
 """
 
-from pymatgen import Structure, Lattice, Element, Composition
-from pymatgen.io.lammps.data import LammpsData
+# from pymatgen import Structure, Lattice, Element, Composition
+from pymatgen.io.lammps.data import LammpsData, LammpsBox
 
-import random, copy, time
+import random
 import numpy as np
+import pandas as pd
 from numpy.random import uniform as unif
 
+# same as in Fantastx
+class register_id(object):
+    def __init__(self):
+        self.label = 0
+    def create_id(self):
+        self.label += 1
+        return self.label
 
 class polymer(object):
     """
-    This class contains all the attributes of a polymer model. Creating random polymer models, or performing GA/mutation operations on a model
+    This class contains all the attributes of a polymer model. Creating random 
+    polymer models, or performing GA/mutation operations on a model
 
-    It also reads the intial polymer cell and stores it's supercell. Later, using this cell, multiple models can be generated.
+    It also reads the intial polymer cell and stores it's supercell. Later, 
+    using this cell, multiple models can be generated.
 
-    The purpose of this class in big picture is to make structures which would then be evaluated for S(Q). i.e., velocities and topology (bonds & angles) is not important for this part.
+    The purpose of this class in big picture is to make structures which would 
+    then be evaluated for S(Q). i.e., velocities and topology (bonds & angles) 
+    is not important for this part.
     """
-    def __init__(self, polymer_parameters):
+    def __init__(self, polymer_parameters, reg_id):
         """
         Args:
 
@@ -76,22 +94,30 @@ class polymer(object):
         if 'min_dist_NP' not in polymer_parameters.keys():
             self.min_dist_NP = self.dia_NP + 3 # Angstroms
             print ('Setting default minimum NP distance '
-                                'of {} Å'.format(min_dist_NP))
+                                'of {} Å'.format(self.min_dist_NP))
         else:
             self.min_dist_NP = polymer_parameters['min_dist_NP']
 
-        # Any other parameters needed should be saved here from input parameters
+        self.chain_length = polymer_parameters['chain_length']
 
+        self.label = reg_id.create_id()
+        
+        # attributes derived from lmp_data --> for convenience
+        atoms_df_1 = self.lmp_data.atoms
+        self.atoms_df_1 = atoms_df_1
+        self.type2_atom_ids_1 = \
+                    atoms_df_1[atoms_df_1['type']==2].index.to_list()
+        self.bonds_df_1 = self.lmp_data.topology['Bonds']
+        self.angles_df_1 = self.lmp_data.topology['Angles']
+        self.atom_ids_1 = atoms_df_1.index.to_list()
+        self.mol_ids_1 = self.lmp_data.atoms['molecule-ID'].to_list()            
+        self.astr = self.lmp_data.structure
+        self.latt = self.astr.lattice
+        self.fracs_1 = self.astr.frac_coords
 
-    def get_nNP_and_dia():
-        """
-        With the given masses of NPs and their mass_fraction in the PNC, get
-        the number of NPs needed and their diameter.
+        # Any other parameters needed should be saved here from 
+        # input parameters
 
-        Q: If we vary the size of the NPs in our distribution, how do we
-        provide respective mass to each NP and then run LAMMPS?
-        """
-        pass
 
     def get_NP_locs(self):
         """
@@ -103,7 +129,8 @@ class polymer(object):
 
         n_NP (int): Number of nanp particles need to be added to polymer matrix
 
-        min_dist_NP (float): The minimum distance between two NPs. Defaults to the (2 * dia_NP + 1) Å
+        min_dist_NP (float): The minimum distance between two NPs. Defaults to 
+        the (2 * dia_NP + 1) Å
 
         """
         n_NP = self.n_NP
@@ -131,8 +158,8 @@ class polymer(object):
                 new_fracs = [unif(0, 1), unif(0, 1), unif(0, 1)]
                 new_carts = latt.get_cartesian_coords(new_fracs)
                 # Get points within a sphere for second point
-                coords_in_new_sphere = latt.get_points_in_sphere(random_coords,
-                                                        new_carts, min_dist_NP)
+                coords_in_new_sphere = latt.get_points_in_sphere_py(
+                                random_coords, new_carts, min_dist_NP)
                 if len(coords_in_new_sphere) > 0:
                     continue
                 else:
@@ -144,78 +171,196 @@ class polymer(object):
                     print (num_tries, new_loc_tries)
 
         return random_coords
-
-
-    def get_NP_sphere():
+    
+    
+    def get_cavity_atom_indices(self, NP_fracs):
         """
-        Get the radius of a NP sphere
-
-        NOTE: If we cannot vary the mass of the NPs according to their size
-        while doing LAMMPS, then we should not vary size of the NPs.
         """
-        pass
-
-    def place_NPs_in_polymer_matrix(self, random_coords):
-        """
-        Get all the polymer atoms in the NP sphere including the border atoms
-        out of sphere with chains within the sphere
-
-        Algorithm:
-        1. Provide all the atoms in the supercell (all_fracs) and the center of the NP sphere (center) and radius of the NP sphere (dia_NP/2) to get all atoms in the sphere.
-
-        2. Find all molecule systems with atoms linked within the sphere
-
-        3. Add the indices of these atoms with the atoms within the sphere
-
-        4. Return the indices
-
-        5. Remove all atoms with obtained indices
-
-        6. Add a new atom with "center" as the coordinates and a new species
-        """
-        atoms_df = self.lmp_data.atoms
-        astr = self.lmp_data.structure
-
-        all_fracs = astr.frac_coords
-        latt = astr.lattice
-        copy_astr = copy.deepcopy(astr)
-
-        atom_locs_to_remove = []
-        for center_of_NP in random_coords:
-            center_of_NP = latt.get_cartesian_coords(center_of_NP)
-            atoms_in_sphere =  latt.get_points_in_sphere(all_fracs,
-                                                center_of_NP, self.dia_NP/2)
+        # convert NP_Coords to carts
+        NP_carts = self.latt.get_cartesian_coords(NP_fracs)
+        # and make cavities in fracs_1
+        cavity_atom_indices = []
+        for center_of_NP in NP_carts:
+            atoms_in_sphere =  self.latt.get_points_in_sphere_py(self.fracs_1,
+                                        center_of_NP, self.dia_NP/2)
+            print ('No. of atoms in sphere: {}'.format(
+                                        len(atoms_in_sphere)))
             # The position/loc of atoms in sphere
-            atom_ilocs_in_sphere = [i[2] for i in atoms_in_sphere]
-
-            # get an array of molecule IDs for each atom ID
-            mol_ids_in_sphere = np.unique([atoms_df["molecule-ID"].iloc[i] \
-                                        for i in atom_ilocs_in_sphere])
-
-            # get all atoms with the corresponding molecule IDs
-            for i in mol_ids_in_sphere:
-                ith_mol_atoms = atoms_df[atoms_df[
-                                    "molecule-ID"]==i].index.to_list()
-                ith_mol_atom_locs = [atoms_df.index.get_loc(i) \
-                                        for i in ith_mol_atoms]
-                atom_locs_to_remove += ith_mol_atom_locs
-
-        atom_locs_to_remove = np.unique(atom_locs_to_remove)
-        # remove the atoms for to make all NP cavities
-        copy_astr.remove_sites(atom_locs_to_remove)
-
-        # add random coords as a second species with random velocities
-        for coords in random_coords:
-            props = {'charge': 0.0,
-                     'velocities': [unif(-1, 1), unif(-1, 1), unif(-1, 1)]}
-            copy_astr.append('Li', coords,
-                             coords_are_cartesian=False, properties=props)
-
-        return copy_astr, atom_locs_to_remove
+            atom_indices_in_sphere = [i[2] for i in atoms_in_sphere]
+            cavity_atom_indices += atom_indices_in_sphere
+            
+        return np.unique(cavity_atom_indices)
 
 
-    def create_PNC():
+    def get_non_cavity_atoms(self, cavity_atom_indices):
         """
-        Make a new polymer nano composite (PNC) with beads and sphere
+        """
+        # get fracs, atom_ids and mol_ids for atoms out of these cavities
+        frac_indices_with_cavities = set([i for i in \
+                        range(len(self.fracs_1))]) - set(cavity_atom_indices)
+        fracs_with_cavities, atom_ids_with_cavities, mol_ids_with_cavities = \
+                                            [], [], []
+        for i in frac_indices_with_cavities:
+            fracs_with_cavities.append(self.fracs_1[i])
+            atom_ids_with_cavities.append(self.atom_ids_1[i])
+            mol_ids_with_cavities.append(self.mol_ids_1[i])        
+        
+        return fracs_with_cavities, atom_ids_with_cavities, \
+                    mol_ids_with_cavities
+               
+                    
+    def get_non_cavity_chain_atoms(self, cavity_atom_indices):
+        """
+        """
+        fracs_with_cavities, atom_ids_with_cavities, \
+                    mol_ids_with_cavities = self.get_non_cavity_atoms(
+                                                    cavity_atom_indices)
+                    
+        # NOTE: cavity atom indices will also give the mol_ids to remove
+        mol_ids_to_remove = [self.mol_ids_1[i] for i in cavity_atom_indices]
+        mol_ids_to_remove = np.unique(mol_ids_to_remove)
+        
+        # get indices from mol_ids_with_cavities for mol_ids_to_remove if any
+        mol_indices_to_remove = [i for i, mol_id in enumerate(
+                        mol_ids_with_cavities) if mol_id in mol_ids_to_remove]
+        mol_indices_to_keep = set([i for i in range(len(
+                        mol_ids_with_cavities))]) - set(mol_indices_to_remove)
+        # get fracs, atom_ids and mol_ids for atoms with removed mol_ids 
+        # that are connected inside cavities
+        disconnected_fracs, disconnected_atom_ids, disconnected_mol_ids = \
+                                                                    [], [], []
+        for i in mol_indices_to_keep:
+            disconnected_fracs.append(fracs_with_cavities[i])
+            disconnected_atom_ids.append(atom_ids_with_cavities[i])
+            disconnected_mol_ids.append(mol_ids_with_cavities[i])
+            
+        return disconnected_fracs, disconnected_atom_ids, disconnected_mol_ids
+
+    
+    def get_new_atoms_df(self, fracs, atom_ids, mol_ids, type_int=1, charge=0, 
+                         NP=False, return_topo=True):
+        """
+        """
+        latt = self.latt
+        bonds_df_1 = self.bonds_df_1
+        angles_df_1 = self.angles_df_1
+        
+        if NP == True: # assign new atom ids and mol ids 
+            atom_ids = [max(atom_ids)+i+1 for i in range(len(fracs))]
+            mol_ids = [max(mol_ids)+i+1 for i in range(len(fracs))]
+        
+        # remove all pre-existing type 2 atom_ids
+        rem_indices = [i for i, atom_id in enumerate(atom_ids) \
+                          if atom_id in self.type2_atom_ids_1]
+        
+        keep_indices = set([i for i in range(len(fracs))]) - set(rem_indices)
+        
+        fracs_2, atom_ids_2, mol_ids_2 = [], [], []
+        for i in keep_indices:
+            fracs_2.append(fracs[i])
+            atom_ids_2.append(atom_ids[i])
+            mol_ids_2.append(mol_ids[i])
+            
+        atoms_dict = {}
+        atoms_dict['molecule-ID'] = mol_ids_2
+        atoms_dict['type'] = np.zeros(len(mol_ids_2), dtype=np.int16) + type_int
+        atoms_dict['q'] = np.zeros(len(mol_ids_2)) + charge
+        
+        # convert fracs to carts
+        carts_2 = latt.get_cartesian_coords(fracs_2)
+        atoms_dict['x'] = carts_2[:, 0]
+        atoms_dict['y'] = carts_2[:, 1]
+        atoms_dict['z'] = carts_2[:, 2]
+        # TODO: not sure if this is necessary to be maintained
+        atoms_dict['nx'] = atoms_dict['ny'] = atoms_dict['nz'] = 0
+        
+        atoms_df = pd.DataFrame(data=atoms_dict, index=atom_ids_2)
+        
+        if not return_topo:
+            return atoms_df
+        else:
+            bonds_df_2 = bonds_df_1[bonds_df_1['atom1'].isin(atom_ids_2)]
+            bonds_df_2 = bonds_df_2[bonds_df_2['atom2'].isin(atom_ids_2)]
+            
+            angles_df_2 = angles_df_1[angles_df_1['atom1'].isin(atom_ids_2)]
+            angles_df_2 = angles_df_2[angles_df_2['atom2'].isin(atom_ids_2)]
+            angles_df_2 = angles_df_2[angles_df_2['atom3'].isin(atom_ids_2)]
+            
+            topo = {'Bonds': bonds_df_2, 'Angles': angles_df_2}
+            
+        return atoms_df, topo
+
+
+    def create_PNC(self, poly_atoms_df, NP_atoms_df, topo):
+        """
+        """
+        a = self.latt.a
+        new_lmp_box = LammpsBox([[0, a], [0, a], [0, a]])
+        # Note: masses, force_field, atom_style same as that of lmp_data
+        pnc_atoms_df = pd.concat([poly_atoms_df, NP_atoms_df])
+        # assign random velocities
+        # TODO: any better method to assign random velocities
+        velocities_df = self.lmp_data.velocities
+        rand_ints = random.sample(range(1, len(self.lmp_data.atoms.x)), 
+                                  len(pnc_atoms_df.x))
+        velocities_df = velocities_df.loc[rand_ints]
+        
+        # create pnc
+        pnc_lmp_data = LammpsData(new_lmp_box, self.lmp_data.masses,
+                                  pnc_atoms_df, velocities=velocities_df, 
+                                  topology=topo, 
+                                  force_field=self.lmp_data.force_field,
+                                  atom_style='full')
+        
+        return pnc_lmp_data
+
+
+    def write_trajectory(self, new_lmp_data, filename):
+        """
+        Get the structure in the form of LAMMPS trajectory, 
+        which is to be used as input for the soq/rdf code (by Jan Michael)
+        """
+        atoms_df = new_lmp_data.atoms
+
+        # time-step: set constant for all structures. Only matters when we
+        # calculate averaged SOQ
+        # TODO: using hard coded 10000 as timestep, change if needed
+        time_step = 10000
+        
+        n_atoms = len(atoms_df.x)
+        bounds = new_lmp_data.box.bounds
+        bounds_lines = [str(bounds[i][0]) + ' ' + str(bounds[i][1]) + '\n' \
+                                                    for i in range(3)]
+        lines = ['ITEM: TIMESTEP\n', str(time_step) + '\n',
+                 'ITEM: NUMBER OF ATOMS\n', str(n_atoms) + '\n',
+                 'ITEM: BOX BOUNDS pp pp pp\n'] + bounds_lines + \
+                 ['ITEM: ATOMS id type x y z \n']
+
+        with open(filename, 'w') as f:
+            f.writelines(lines)
+            for i in range(n_atoms):
+                index = atoms_df.index[i]
+                line = '{0} {1} {2:.6f} {3:.6f} {4:.6f}\n'.format(index,
+                                            atoms_df['type'].loc[index],
+                                            atoms_df['x'].loc[index],
+                                            atoms_df['y'].loc[index],
+                                            atoms_df['z'].loc[index])
+                f.write(line)
+                
+    def write_poscar(self, new_lmp_data, filename):
+        """
+        Get the new structure in the form of POSCAR
+        """
+        new_lmp_data.structure.to(filename=filename)
+
+    def get_soq(self, data_file):
+        """
+        Use the soq_mpi_fftv3 to get the SOQ from the data_file
         """
         pass
+
+    def add_polymer_monomers(self, astr):
+        """
+        If possible, add polymer monomers around NP cavity to increase the
+        atom density
+        """
