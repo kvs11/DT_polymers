@@ -1,7 +1,11 @@
 from pymatgen.core.lattice import Lattice
 from pymatgen.core.structure import Structure
+from pymatgen.transformations.standard_transformations import \
+    RotationTransformation
+from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 
 import os, random
+import copy
 import pandas as pd
 import numpy as np
 from math import pi
@@ -176,16 +180,26 @@ class nanoparticles_box(object):
                 f.write(line)
 
     # Get 100 random PNCs
-    def get_rand_pnc_traj(self, label, rand_seed):
+    def get_rand_pnc_traj(self, label, rand_seed, write_trajectory=True,
+                          return_structure=True):
         """
         """
         np.random.seed(rand_seed)
         rand_fracs, dia_NPs = self.get_rand_frac_coords()
         cart_coords = self.box_latt.get_cartesian_coords(rand_fracs)
-        traj_filename = 'dump.{:09d}.txt'.format(label * 1000)
-        self.write_trajectory(label, cart_coords, traj_filename)
-        #"Done {}".format(label)
-        return dia_NPs
+
+        if write_trajectory:
+            traj_filename = 'dump.{:09d}.txt'.format(label * 1000)
+            self.write_trajectory(label, cart_coords, traj_filename)
+
+        # TODO: Remove this bool and make return structure default
+        if return_structure:
+            sps = ['Li' for i in range(len(cart_coords))]
+            struct = Structure(self.box_latt, sps, cart_coords,
+                               coords_are_cartesian=True)
+            return dia_NPs, struct
+        else:
+            return dia_NPs
 
     def get_NP_coords_cluster(self, cluster_dia=None, shuffle_center=False):
         """
@@ -359,6 +373,81 @@ class nanoparticles_box(object):
         self.write_trajectory(label, cart_coords, traj_filename)
         #"Done {}".format(label)
         return dia_NPs
+
+    def random_translation(self, astr):
+        """
+        Translates all "atoms" for a random length in x, y and z directions
+        """
+        cart_coords = astr.cart_coords
+        abc = np.array(astr.lattice.abc)
+        dxdydz = np.random.uniform(size=3) * abc
+        new_cart_coords = cart_coords + dxdydz
+
+        new_astr = Structure(astr.lattice, astr.species, new_cart_coords,
+                             coords_are_cartesian=True)
+        spg_astr = SpacegroupAnalyzer(new_astr)
+        new_astr = spg_astr.get_refined_structure()
+
+        return new_astr
+
+    def random_rotation(self, astr):
+        """
+        Rotates the "astr" by either [90, 180, 270] degrees along each of x, y
+        and z directions one after another
+        """
+        temp_astr = copy.deepcopy(astr)
+        dxdydz = np.random.choice([0, 90, 180, 270], size=3)
+        hkls = [[1, 0, 0], [0, 1, 0], [0, 0 ,1]]
+
+        for hkl, angle in zip(hkls, dxdydz):
+            rotate = RotationTransformation(hkl, angle)
+            temp_astr = rotate.apply_transformation(temp_astr)
+
+        new_latt = temp_astr.lattice
+        new_astr = Structure(new_latt, astr.species, astr.cart_coords,
+                             coords_are_cartesian=True)
+        spg_astr = SpacegroupAnalyzer(new_astr)
+        new_astr = spg_astr.get_refined_structure()
+
+        return new_astr
+
+    def increase_pnc_size(self, init_astr, size=2):
+        """
+        For size 2, makes 2x2x2 = 8x the initial structure
+        For size 3, makes 3x3x3 = 27x the initial structure
+
+        Example: For size=2,
+        get 7 transformed sets of cart_coords
+        translate each set into respective locations i.e.,
+        {a, 0, 0 ; 0, b, 0 ; 0, 0, c ; a, b, 0; 0, b, c ; a, 0, c; a, b, c}
+        """
+        init_carts = init_astr.cart_coords
+        init_min_xyz = init_carts.min(axis=0)
+        abc = np.array(init_astr.lattice.abc)
+        abc_sets = np.array([[1 ,0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0],
+                             [0, 1, 1], [1, 0, 1], [1, 1, 1]])
+        size_2_carts = list(init_carts)
+        if size==2:
+            for i in range(7):
+                translated_astr = self.random_translation(init_astr)
+                rotated_astr = self.random_rotation(translated_astr)
+                new_carts = rotated_astr.cart_coords
+                new_abc = abc_sets[i]
+                new_min_xyz = init_min_xyz + abc * new_abc
+                curr_min_xyz = new_carts.min(axis=0)
+                translate_xyz = new_min_xyz - curr_min_xyz
+                new_carts = new_carts + translate_xyz
+                size_2_carts += list(new_carts)
+
+        size_2_latt = init_astr.lattice.matrix * 2
+        size_2_sps = ['Li' for i in range(len(size_2_carts))]
+        size_2_astr = Structure(size_2_latt, size_2_sps, size_2_carts,
+                                coords_are_cartesian=True)
+
+        size_2_astr.sort()
+
+        return size_2_astr
+
 ###########################################################################
 
 np_box_params = {'mean_dia_NP' : 2.5,
@@ -367,21 +456,16 @@ np_box_params = {'mean_dia_NP' : 2.5,
                 'max_dia_NP' : 2.6,
                 'min_gap_NP' : 0.7,
                 'vol_frac'   : 0.1,
-                'box_len'    : 50,
+                'box_len'    : 20,
+                'num_clusters': 2,
+                'num_NPs_per_cluster': 8,
+                'cluster_shape': 'blob',
                 'min_gap_NP_in_cluster': 0.2}
 np_box_obj = nanoparticles_box(np_box_params)
 
-total = 100
-seed_rands = np.random.randint(100, 1000000, size=total)
-executor = ProcessPoolExecutor(max_workers=16)
-
-futures = []
-for label, rand_n in zip(range(total), seed_rands):
-    out = executor.submit(np_box_obj.get_rand_pnc_traj, label, rand_n)
-    futures.append(out)
-
-labels, diaNPs_100 = [], []
-for f in futures:
-    diaNPs_100.append(f.result())
-
-dia_arr = np.array(diaNPs_100)
+label, rand_n = 11, 123
+dia_NPs, pnc_astr = np_box_obj.get_rand_pnc_traj(label, rand_n,
+                                                 write_trajectory=False,
+                                                 return_structure=True)
+size_2_pnc = np_box_obj.increase_pnc_size(pnc_astr, size=2)
+size_4_pnc = np_box_obj.increase_pnc_size(size_2_pnc, size=2)

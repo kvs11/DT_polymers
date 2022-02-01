@@ -1,11 +1,16 @@
 from pymatgen.core.lattice import Lattice
+from pymatgen.core.structure import Structure
+from pymatgen.transformations.standard_transformations import \
+    RotationTransformation
+from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 
 import os, random
+import copy
 import pandas as pd
 import numpy as np
 from math import pi
 from numpy.random import uniform as unif
-from concurrent.futures import ProcessPoolExecutor
+
 
 class nanoparticles_box(object):
 
@@ -19,6 +24,10 @@ class nanoparticles_box(object):
         self.max_dia_NP = np_box_params['max_dia_NP']
         self.min_gap_NP = np_box_params['min_gap_NP']
         self.vol_frac = np_box_params['vol_frac']
+        self.min_gap_NP_in_cluster = np_box_params['min_gap_NP_in_cluster']
+        self.num_clusters = np_box_params['num_clusters']
+        self.num_NPs_per_cluster = np_box_params['num_NPs_per_cluster']
+        self.cluster_shape = np_box_params['cluster_shape']
 
         self.min_n_NPs = None
         self.max_n_NPs = None
@@ -72,14 +81,27 @@ class nanoparticles_box(object):
                             [0, 0, self.box_len]])
         return box_latt
 
-    def get_rand_frac_coords(self):
+    def get_rand_frac_coords(self, curr_NP_coords=None, coords_are_cartesian=True, curr_dia_NPs=None):
         """
         """
         random_coords = []
         dia_NPs = []
-        new_loc_tries = 0
+        NPs_needed = self.n_NPs
         NPs_added = 0
-        while NPs_added < self.n_NPs - 1 and new_loc_tries < self.n_NPs+100:
+        if curr_NP_coords is not None:
+            random_coords = list(curr_NP_coords)
+            if coords_are_cartesian:
+                random_coords = list(self.box_latt.get_fractional_coords(
+                                                            curr_NP_coords))
+            if curr_dia_NPs is None:
+                dia_NPs = [self.mean_dia_NP for i in range(len(random_coords))]
+            else:
+                dia_NPs = list(curr_dia_NPs)
+            NPs_added = len(random_coords)
+            NPs_needed = self.n_NPs - NPs_added
+
+        new_loc_tries = 0
+        while NPs_added < NPs_needed - 1 and new_loc_tries < NPs_needed+100:
             new_loc_tries += 1
             if len(random_coords) == 0:
                 new_fracs = [unif(0, 1), unif(0, 1), unif(0, 1)]
@@ -151,18 +173,28 @@ class nanoparticles_box(object):
                 f.write(line)
 
     # Get 100 random PNCs
-    def get_rand_pnc_traj(self, label, rand_seed):
+    def get_rand_pnc_traj(self, label, rand_seed, write_trajectory=True,
+                          return_structure=True):
         """
         """
         np.random.seed(rand_seed)
         rand_fracs, dia_NPs = self.get_rand_frac_coords()
         cart_coords = self.box_latt.get_cartesian_coords(rand_fracs)
-        traj_filename = 'dump.{:09d}.txt'.format(label * 1000)
-        self.write_trajectory(label, cart_coords, traj_filename)
-        #"Done {}".format(label)
-        return dia_NPs
 
-    def get_NP_coords_cluster(self, num_atoms, cluster_dia, shuffle_center=False):
+        if write_trajectory:
+            traj_filename = 'dump.{:09d}.txt'.format(label * 1000)
+            self.write_trajectory(label, cart_coords, traj_filename)
+
+        # TODO: Remove this bool and make return structure default
+        if return_structure:
+            sps = ['Li' for i in range(len(cart_coords))]
+            struct = Structure(self.box_latt, sps, cart_coords,
+                               coords_are_cartesian=True)
+            return dia_NPs, struct
+        else:
+            return dia_NPs
+
+    def get_NP_coords_cluster(self, cluster_dia=None, shuffle_center=False):
         """
         Given maximum allowed diamter of a cluster, this function adds random
         coordinates in a chain like fashion connected to the previous added
@@ -172,32 +204,34 @@ class nanoparticles_box(object):
 
         Args:
 
-        num_atoms (int) - number of atoms needed in the structure
+        num_NPs (int) - number of atoms needed in the structure
 
         cluster_dia (float) - maximum diameter of the cluster
         """
         # start from origin
         old_NP_point = np.array([0, 0, 0])
-        old_NP_dia = self.get_dia_NP()
 
+        # Add first point
+        rand_cart_coords = []
+        rand_cart_coords.append(old_NP_point)
+        coords_added = 1
+        old_NP_dia = self.get_dia_NP()
         dia_NPs = []
         dia_NPs.append(old_NP_dia)
 
-
-        rand_cart_coords = []
-        coords_added = 0
         new_NP_point_attempt = 0
-        while coords_added < num_atoms:
-            new_NP_point = self.get_point_on_sphere(dia_NP/2)
+        while coords_added < self.num_NPs_per_cluster:
             new_NP_dia = self.get_dia_NP()
-            dist_NP = old_NP_dia/2 + new_NP_dia/2 + self.min_gap_cluster
+            dist_NP = old_NP_dia/2 + new_NP_dia/2 + \
+                                self.min_gap_NP_in_cluster
+            new_NP_point = self.get_point_on_sphere(dist_NP)
 
             # returns None if the algo cannot add a new point in 500 attempts
             # if the cluster_diameter is too small, this algo hangs trying to
             # add new point
             new_NP_point_attempt += 1
             if new_NP_point_attempt > 1000:
-                return None
+                return None, None
 
             # translate the point near the old_NP_point
             new_NP_point = new_NP_point + old_NP_point
@@ -215,14 +249,15 @@ class nanoparticles_box(object):
                                     rand_frac_coords, new_NP_point, max_dist)
 
             # check dist individually with each NP within the max_dist
-            dist_check = True
-            while dist_check is True:
-                for each_NP in coords_in_new_sphere:
-                    dist = each_NP[1]
-                    dia_NP2 = dia_NPs[each_NP[2]]
-                    if not dist > new_NP_dia/2 + dia_NP2/2 + self.min_gap_NP:
-                        dist_check = False
-            if not dist_check:
+            dist_check = 0
+            for each_NP in coords_in_new_sphere:
+                dist = each_NP[1]
+                dia_NP2 = dia_NPs[each_NP[2]]
+                if dist < new_NP_dia/2 + dia_NP2/2 + \
+                                    self.min_gap_NP_in_cluster - 0.1:
+                    dist_check += 1
+                    break
+            if dist_check != 0:
                 continue
 
             # add the new_NP_point and reset the no. of attempts
@@ -235,8 +270,10 @@ class nanoparticles_box(object):
                                                     len(rand_cart_coords))]
             coords_added += 1
 
+        if len(rand_cart_coords) < self.num_NPs_per_cluster:
+            return None, None
         # coords are cartesian
-        return rand_cart_coords
+        return np.array(rand_cart_coords), dia_NPs
 
     def get_point_on_sphere(self, r):
         """
@@ -257,40 +294,151 @@ class nanoparticles_box(object):
 
         return point
 
+    def join_n_clusters(self, set_cluster_dia=False, shuffle_center=False):
+        """
+        """
+        num_clusters = self.num_clusters
+        if num_clusters > 5:
+            # TODO
+            print ('num_clusters should be 5 or less.')
+        cluster_dia = None
+        if set_cluster_dia is True:
+            cluster_dia = int(num_clusters**(1/3)*2*2.5)
+
+        all_clusters = []
+        all_dia_NPs = []
+        while len(all_clusters) < num_clusters:
+            clus_carts, dia_NPs = self.get_NP_coords_cluster(
+                                            cluster_dia=cluster_dia,
+                                            shuffle_center=shuffle_center)
+            if clus_carts is not None:
+                all_clusters.append(clus_carts)
+                all_dia_NPs += dia_NPs
+
+        #### TEMP
+        a = self.box_latt.a
+        if num_clusters == 1:
+            clus_carts = all_clusters[0] + np.array([a/2, a/2, a/2])
+            all_clus_carts = clus_carts
+        if num_clusters == 2:
+            clus_carts = all_clusters[0] + np.array([a/4, a/4, a/4])
+            all_clus_carts = clus_carts
+            clus_carts = all_clusters[1] + np.array([3*a/4, 3*a/4, 3*a/4])
+            all_clus_carts = np.concatenate((all_clus_carts, clus_carts))
+        if num_clusters >= 3:
+            clus_carts = all_clusters[0] + np.array([a/2, a/2, 0])
+            all_clus_carts = clus_carts
+            clus_carts = all_clusters[1] + np.array([0, a/2, a/2])
+            all_clus_carts = np.concatenate((all_clus_carts, clus_carts))
+            clus_carts = all_clusters[2] + np.array([a/2, 0, a/2])
+            all_clus_carts = np.concatenate((all_clus_carts, clus_carts))
+        if num_clusters >= 4:
+            clus_carts = all_clusters[3] + np.array([a/2, a/2, a/2])
+            all_clus_carts = np.concatenate((all_clus_carts, clus_carts))
+        if num_clusters == 5:
+            clus_carts = all_clusters[4]
+            all_clus_carts = np.concatenate((all_clus_carts, clus_carts))
+
+        return all_clus_carts, all_dia_NPs
+
+    def get_clustered_pnc_traj(self, label, rand_seed):
+        """
+        """
+        np.random.seed(rand_seed)
+        cluster_shape = self.cluster_shape
+        if cluster_shape == 'combination':
+            cluster_shape = np.random.choice(['chain', 'blob', 'tentacle'])
+        if cluster_shape == 'chain':
+            set_cluster_dia, shuffle_center = False, False
+        elif cluster_shape == 'blob':
+            set_cluster_dia, shuffle_center = True, True
+        elif cluster_shape == 'tentacle':
+            set_cluster_dia, shuffle_center = False, True
+
+        all_clus_carts, all_dia_NPs = self.join_n_clusters(
+                                        set_cluster_dia, shuffle_center)
+        rand_fracs, dia_NPs = self.get_rand_frac_coords(
+                                        curr_NP_coords=all_clus_carts,
+                                        coords_are_cartesian=True,
+                                        curr_dia_NPs=all_dia_NPs)
+        cart_coords = self.box_latt.get_cartesian_coords(rand_fracs)
+        traj_filename = 'dump.{:09d}.txt'.format(label * 1000)
+        self.write_trajectory(label, cart_coords, traj_filename)
+        #"Done {}".format(label)
+        return dia_NPs
+
+    def random_translation(self, astr):
+        """
+        Translates all "atoms" for a random length in x, y and z directions
+        """
+        cart_coords = astr.cart_coords
+        abc = np.array(astr.lattice.abc)
+        dxdydz = np.random.uniform(size=3) * abc
+        new_cart_coords = cart_coords + dxdydz
+
+        new_astr = Structure(astr.lattice, astr.species, new_cart_coords,
+                             coords_are_cartesian=True)
+        spg_astr = SpacegroupAnalyzer(new_astr)
+        new_astr = spg_astr.get_refined_structure()
+
+        return new_astr
+
+    def random_rotation(self, astr):
+        """
+        Rotates the "astr" by either [90, 180, 270] degrees along each of x, y
+        and z directions one after another
+        """
+        temp_astr = copy.deepcopy(astr)
+        dxdydz = np.random.choice([0, 90, 180, 270], size=3)
+        hkls = [[1, 0, 0], [0, 1, 0], [0, 0 ,1]]
+
+        for hkl, angle in zip(hkls, dxdydz):
+            rotate = RotationTransformation(hkl, angle)
+            temp_astr = rotate.apply_transformation(temp_astr)
+
+        new_latt = temp_astr.lattice
+        new_astr = Structure(new_latt, astr.species, astr.cart_coords,
+                             coords_are_cartesian=True)
+        spg_astr = SpacegroupAnalyzer(new_astr)
+        new_astr = spg_astr.get_refined_structure()
+
+        return new_astr
+
+    def increase_pnc_size(self, init_astr, size=2):
+        """
+        For size 2, makes 2x2x2 = 8x the initial structure
+        For size 3, makes 3x3x3 = 27x the initial structure
+
+        Example: For size=2,
+        get 7 transformed sets of cart_coords
+        translate each set into respective locations i.e.,
+        {a, 0, 0 ; 0, b, 0 ; 0, 0, c ; a, b, 0; 0, b, c ; a, 0, c; a, b, c}
+        """
+        init_carts = init_astr.cart_coords
+        init_min_xyz = init_carts.min(axis=0)
+        abc = np.array(init_astr.lattice.abc)
+        abc_sets = np.array([[1 ,0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0],
+                             [0, 1, 1], [1, 0, 1], [1, 1, 1]])
+        size_2_carts = list(init_carts)
+        if size==2:
+            for i in range(7):
+                translated_astr = self.random_translation(init_astr)
+                rotated_astr = self.random_rotation(translated_astr)
+                new_carts = rotated_astr.cart_coords
+                new_abc = abc_sets[i]
+                new_min_xyz = init_min_xyz + abc * new_abc
+                curr_min_xyz = new_carts.min(axis=0)
+                translate_xyz = new_min_xyz - curr_min_xyz
+                new_carts = new_carts + translate_xyz
+                size_2_carts += list(new_carts)
+
+        size_2_latt = init_astr.lattice.matrix * 2
+        size_2_sps = ['Li' for i in range(len(size_2_carts))]
+        size_2_astr = Structure(size_2_latt, size_2_sps, size_2_carts,
+                                coords_are_cartesian=True)
+
+        size_2_astr.sort()
+
+        return size_2_astr
+
 ###########################################################################
-
-
-
-vfs = [0.16, 0.2, 0.25, 0.3, 0.4, 0.5]
-
-for vol_frac in vfs:
-    dirname = 'vf_{}'.format(vol_frac)
-    os.mkdir(dirname)
-    os.chdir(dirname)
-    np_box_params = {'mean_dia_NP' : 2.5,
-                'sigma_dia_NP' : 1,
-                'min_dia_NP' : 2.1,
-                'max_dia_NP' : 3,
-                'min_gap_NP' : 0.2,
-                'vol_frac'   : vol_frac,
-                'box_len'    : 50}
-    np_box_obj = nanoparticles_box(np_box_params)
-
-    total = 100
-    seed_rands = np.random.randint(100, 1000000, size=total)
-    executor = ProcessPoolExecutor(max_workers=16)
-
-    futures = []
-    for label, rand_n in zip(range(total), seed_rands):
-        out = executor.submit(np_box_obj.get_rand_pnc_traj, label, rand_n)
-        futures.append(out)
-
-    labels, diaNPs_100 = [], []
-    for f in futures:
-        diaNPs_100.append(f.result())
-
-    dia_arr = np.array(diaNPs_100)
-    df = pd.DataFrame(data=dia_arr, columns=['NP'+str(i+1) for i in \
-                                            range(len(diaNPs_100[0]))])
-    df.to_csv('data_dia_{}vf.csv'.format(vol_frac))
-    os.chdir('../')
