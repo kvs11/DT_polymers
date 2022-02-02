@@ -140,7 +140,7 @@ class nanoparticles_box(object):
 
         return random_coords, dia_NPs
 
-    def write_trajectory(self, label, cart_coords, filename):
+    def write_trajectory(self, label, astr, filename):
         """
         Get the structure in the form of LAMMPS trajectory,
         which is to be used as input for the soq/rdf code (by Jan Michael)
@@ -148,11 +148,10 @@ class nanoparticles_box(object):
         # TODO: using hard coded 10000 as timestep, change if needed
         time_step = label * 1000
 
-        #if len(cart_coords) != n_NPs:
-        #    print ('Warning: Required no. of NPs locs are not obtained')
-        n_atoms = len(cart_coords)
+        cart_coords = astr.cart_coords
+        box_half_len = astr.lattice.a / 2
 
-        box_half_len = self.box_latt.a / 2
+        n_atoms = len(cart_coords)
         bounds_lines = ["-{0} {0}\n-{0} {0}\n-{0} {0}\n".format(box_half_len)]
 
         # shift all cart coords by box_half_len to match the box bounds
@@ -404,7 +403,22 @@ class nanoparticles_box(object):
 
         return new_astr
 
-    def increase_pnc_size(self, init_astr, size=2):
+    def _get_abc_sets(self, n):
+        """
+        """
+        if n > 10:
+            print ("10x10x10 is too big for a supercell size in 3D. Using 5..")
+
+        abc_sets = []
+        for x in range(n):
+            for y in range(n):
+                for z in range(n):
+                    abc_sets.append([x, y, z])
+        abc_sets.remove([0, 0, 0])
+
+        return abc_sets
+
+    def increase_pnc_size(self, init_astr, size=2, alter_cells=True):
         """
         For size 2, makes 2x2x2 = 8x the initial structure
         For size 3, makes 3x3x3 = 27x the initial structure
@@ -417,28 +431,29 @@ class nanoparticles_box(object):
         init_carts = init_astr.cart_coords
         init_min_xyz = init_carts.min(axis=0)
         abc = np.array(init_astr.lattice.abc)
-        abc_sets = np.array([[1 ,0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0],
-                             [0, 1, 1], [1, 0, 1], [1, 1, 1]])
-        size_2_carts = list(init_carts)
-        if size==2:
-            for i in range(7):
+        abc_sets = self._get_abc_sets(size)
+
+        size_n_carts = list(init_carts)
+        for new_abc in abc_sets:
+            if alter_cells:
                 translated_astr = self.random_translation(init_astr)
                 rotated_astr = self.random_rotation(translated_astr)
                 new_carts = rotated_astr.cart_coords
-                new_abc = abc_sets[i]
-                new_min_xyz = init_min_xyz + abc * new_abc
-                curr_min_xyz = new_carts.min(axis=0)
-                translate_xyz = new_min_xyz - curr_min_xyz
-                new_carts = new_carts + translate_xyz
-                size_2_carts += list(new_carts)
+            else:
+                new_carts = init_carts.copy()
+            new_min_xyz = init_min_xyz + abc * new_abc
+            curr_min_xyz = new_carts.min(axis=0)
+            translate_xyz = new_min_xyz - curr_min_xyz
+            new_carts = new_carts + translate_xyz
+            size_n_carts += list(new_carts)
 
-        size_2_latt = init_astr.lattice.matrix * 2
-        size_2_sps = ['Li' for i in range(len(size_2_carts))]
-        size_2_astr = Structure(size_2_latt, size_2_sps, size_2_carts,
+        size_n_latt = init_astr.lattice.matrix * size
+        size_n_sps = ['Li' for i in range(len(size_n_carts))]
+        size_n_astr = Structure(size_n_latt, size_n_sps, size_n_carts,
                                 coords_are_cartesian=True)
 
-        size_2_astr.sort()
+        size_n_astr.sort()
 
-        return size_2_astr
+        return size_n_astr
 
 ###########################################################################
