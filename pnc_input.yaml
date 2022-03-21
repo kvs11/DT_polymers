@@ -1,0 +1,43 @@
+# variable parameters
+pnc_variables:
+    mean_dia_NP : 2.5
+    min_gap_NP : 0.5
+    vol_frac   : 0.1
+    num_clusters: 3
+    num_NPs_per_cluster: 8
+    min_gap_NP_in_cluster: 0.2
+
+# Fixed parameters
+pnc_fixed_params:
+    cluster_shape: 'combination'
+    sigma_dia_NP : 0.1
+    min_dia_NP : 2.1
+    max_dia_NP : 2.9
+    box_len: 20
+    scell_size: 4
+    scells_for_one_soq: 25
+    in_soq_path: 'in.soq'
+    soq_exec_cmd: 'mpirun /sandbox/vkolluru/DT_polymers/06SEND_TO_COLLAB/ANALYSIS_CODES/SOQ/soq_mpi_fftv3_v2'
+    qrange:
+        - 0.01
+        - 0.15
+
+bounds:
+    mean_dia_NP :
+        - 2.2
+        - 2.7
+    min_gap_NP :
+        - 0.3
+        - 1.5
+    vol_frac:
+        - 0.05
+        - 0.3
+    num_clusters:
+        - 1
+        - 6
+    num_NPs_per_cluster:
+        - 6
+        - 15
+    min_gap_NP_in_cluster:
+        - 0.1
+        - 1
