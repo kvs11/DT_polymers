@@ -28,7 +28,6 @@ class candidate(object):
         self.max_times_as_parent = 20
         self.times_chosen_as_parent = 0
 
-
 def get_xy(f):
     with open(f) as ff:
         lines = ff.readlines()
@@ -83,59 +82,6 @@ def get_n_NP(dia_NP, vol_box):
     max_n_NP = int(0.11*vol_box/vol_NP)
     n_NP = random.randint(min_n_NP, max_n_NP)
     return n_NP
-
-def chisquare(observed_values,expected_values):
-    test_statistic=0
-    for observed, expected in zip(observed_values, expected_values):
-        test_statistic+=(float(observed)-float(expected))**2/float(expected)
-    return test_statistic
-
-def get_chi_squared_stat(rescaling_factor, candidate_dir, pnc_params, plot=False):
-    """
-    """
-    qrange = pnc_params['qrange']
-    rescaling_factor = rescaling_factor[0]
-    # align maxima and rescale
-    # experimental SOQ should be only data of the form: 'q    Soq\n'
-    exp_soq_file = pnc_params['exp_soq_path']
-    exp_q, exp_soq = get_xy(exp_soq_file)
-
-    # get simulated x and y from the candidate soq.txt file
-    sim_soqf = candidate_dir + '/soq.txt'
-    sim_x, sim_y = get_xy(sim_soqf)
-    # rescale sim_x (values of q)
-    sim_x = sim_x * rescaling_factor
-
-    # do spline interpolation on exp Soq & sim Soq
-    # get exp data for interpolation
-    exp_min_ind = min(range(len(exp_q)), key=lambda i: abs(exp_q[i]-qrange[0]))
-    exp_max_ind = min(range(len(exp_q)), key=lambda i: abs(qrange[1]-exp_q[i]))
-    exp_new_x   = exp_q[exp_min_ind-5: exp_max_ind+5]
-    exp_new_y   = exp_soq[exp_min_ind-5: exp_max_ind+5]
-
-    # get sim data for interpolation
-    sim_min_ind = min(range(len(sim_x)), key=lambda i: abs(sim_x[i]-qrange[0]))
-    sim_max_ind = min(range(len(sim_x)), key=lambda i: abs(qrange[1]-sim_x[i]))
-    sim_new_x   = sim_x[sim_min_ind-5:sim_max_ind+5]
-    sim_new_y   = sim_y[sim_min_ind-5:sim_max_ind+5]
-
-    # get q values within this range and then interpolated y values
-    qvalues = np.linspace(qrange[0], qrange[1], 1000)
-    exp_spline  = InterpolatedUnivariateSpline(exp_new_x, exp_new_y)
-    exp_yi = exp_spline(qvalues)
-    sim_spline  = InterpolatedUnivariateSpline(sim_new_x, sim_new_y)
-    sim_yi = sim_spline(qvalues)
-    chi_square_stat = chisquare(sim_yi, exp_yi)
-    if plot:
-        plt.scatter(qvalues, exp_yi, marker='o', facecolors='none', edgecolors='g')
-        plt.plot(qvalues, sim_yi, c='orange')
-        plt.xlabel(r'q($\sigma^{-1}$)', fontsize=14)
-        plt.ylabel('S(q)', fontsize=14)
-        plt.text(0.11, 0.1, r'$\chi^{}$ : {:.3f}'.format(2, chi_square_stat), fontsize=14)
-        plt.legend(['Exp. S(q)', 'Sim. S(q)'])
-        plt.savefig(candidate_dir + '/soq_plot.png')
-
-    return chi_square_stat
 
 # get simulated soq from the 50 PNCs
 def get_sim_soq(pnc_params, candidate_dir):
@@ -399,3 +345,119 @@ def write_data(cand, file_path):
     """
     with open(file_path, 'a') as f:
         f.write('{} {}\n'.format(cand.label, cand.chi_stat))
+
+def get_chisquare_weighted(observed_values, expected_values, q_array, weights_dict):
+    """
+    weights_dict = {"q_extrema": [0.033, 0.047, 0.063],
+                    "weights": [100, 90, 80], 
+                    "q_tol": 0.005}
+    """
+    q_tol = weights_dict['q_tol']
+    q_extrema = weights_dict['q_extrema']
+    weights_arr = np.ones(len(observed_values))
+    for i, q in enumerate(q_array):
+        for j in range(len(q_extrema)):
+            if q_extrema[j] - q_tol <= q <= q_extrema[j] + q_tol:
+                weights_arr[i] = weights_dict['weights'][j]
+                break
+
+    weighted_statistic=0
+    for observed, expected, w in zip(observed_values, expected_values, weights_arr):
+        weighted_statistic += ((float(observed)-float(expected))**2 *w) / float(expected)
+
+    return weighted_statistic 
+
+def get_q_soq_extrema(exp_q, exp_soq, skip=7):
+    """
+    
+    """
+    # First, downsample 1 point for every 10 points
+    # This is to avoid noise 
+    q = [exp_q[i*skip] for i in range(int(len(exp_q)/skip - 1))]
+    soq = [exp_soq[i*skip] for i in range(int(len(exp_q)/skip - 1))]
+
+    # get differential of soq with respect to q
+    soq_diff = np.diff(soq)
+    # get q values diff
+    q_diff = np.diff(q)
+    # get slope: divide soq_diff by q_values diff
+    slope = soq_diff / q_diff
+    # find where slope changes sign
+    sign_change_inds = np.where(np.diff(np.sign(slope)))[0]
+    sign_change_inds = sign_change_inds + 1
+    # return q values at those points
+    q_extrema, soq_extrema = [], [] 
+    for i in sign_change_inds:
+        q_extrema.append(q[i])
+        soq_extrema.append(soq[i])
+
+    return q_extrema, soq_extrema
+
+def chisquare(observed_values,expected_values):
+    test_statistic=0
+    for observed, expected in zip(observed_values, expected_values):
+        test_statistic+=(float(observed)-float(expected))**2/float(expected)
+    return test_statistic
+
+def get_chi_squared_stat(rescaling_factor, candidate_dir, pnc_params, plot=False):
+    """
+    """
+    qrange = pnc_params['qrange']
+    rescaling_factor = rescaling_factor[0]
+    # align maxima and rescale
+    # experimental SOQ should be only data of the form: 'q    Soq\n'
+    exp_soq_file = pnc_params['exp_soq_path']
+    exp_q, exp_soq = get_xy(exp_soq_file)
+
+    # get simulated x and y from the candidate soq.txt file
+    sim_soqf = candidate_dir + '/soq.txt'
+    sim_x, sim_y = get_xy(sim_soqf)
+    # rescale sim_x (values of q)
+    sim_x = sim_x * rescaling_factor
+
+    # Do spline interpolation on exp Soq & sim Soq
+
+    # First, downsample 1 point for every 10 points for exp soq
+    # This is to avoid noise 
+    skip = 10
+    downd_q = [exp_q[i*skip] for i in range(int(len(exp_q)/skip - 1))]
+    downd_soq = [exp_soq[i*skip] for i in range(int(len(exp_q)/skip - 1))]
+
+    # get exp data for interpolation
+    exp_min_ind = min(range(len(downd_q)), key=lambda i: abs(downd_q[i]-qrange[0]))
+    exp_max_ind = min(range(len(downd_q)), key=lambda i: abs(qrange[1]-downd_q[i]))
+    exp_new_x   = downd_q[exp_min_ind-1:exp_max_ind+1]
+    exp_new_y   = downd_soq[exp_min_ind-1:exp_max_ind+1]
+    # get sim data for interpolation
+    sim_min_ind = min(range(len(sim_x)), key=lambda i: abs(sim_x[i]-qrange[0]))
+    sim_max_ind = min(range(len(sim_x)), key=lambda i: abs(qrange[1]-sim_x[i]))
+    sim_new_x   = sim_x[sim_min_ind-1:sim_max_ind+1]
+    sim_new_y   = sim_y[sim_min_ind-1:sim_max_ind+1]
+    # get q values within this range and then interpolated exp, sim soq values
+    num_pts = 1000
+    qvalues = np.linspace(qrange[0], qrange[1], num_pts)
+    exp_spline  = InterpolatedUnivariateSpline(exp_new_x, exp_new_y)
+    exp_yi = exp_spline(qvalues)
+    sim_spline  = InterpolatedUnivariateSpline(sim_new_x, sim_new_y)
+    sim_yi = sim_spline(qvalues)
+
+    # observed_values, expected_values, q_array, weights_dict
+    weights_dict = {"q_extrema": [],
+                    "weights": pnc_params["weights"], 
+                    "q_tol": pnc_params["q_tol"]}
+
+    # get q_extrema and soq_extrema
+    q_extrema, soq_extrema = get_q_soq_extrema(qvalues, exp_yi)
+    weights_dict["q_extrema"] = q_extrema[:len(weights_dict["weights"])]    
+
+    weighted_chisquared = get_chisquare_weighted(sim_yi, exp_yi, qvalues, weights_dict)
+    if plot:
+        plt.scatter(qvalues, exp_yi, marker='o', facecolors='none', edgecolors='g')
+        plt.plot(qvalues, sim_yi, c='orange')
+        plt.xlabel(r'q($\sigma^{-1}$)', fontsize=14)
+        plt.ylabel('S(q)', fontsize=14)
+        plt.text(0.11, 0.1, r'$\chi^{}$ : {:.3f}'.format(2, weighted_chisquared), fontsize=14)
+        plt.legend(['Exp. S(q)', 'Sim. S(q)'])
+        plt.savefig(candidate_dir + '/soq_plot.png')
+
+    return weighted_chisquared
