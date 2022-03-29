@@ -1,4 +1,5 @@
 import os
+import time
 #from shutil import copy as shutilcopy
 import subprocess as sp
 import numpy as np
@@ -11,8 +12,6 @@ from scipy.interpolate import InterpolatedUnivariateSpline
 import scipy.optimize
 from scipy.optimize import minimize
 from NPs_box import nanoparticles_box
-import signal
-from contextlib import contextmanager
 
 class register_id(object):
     def __init__(self):
@@ -133,20 +132,6 @@ def get_init_rescaling(pnc_params, candidate_dir):
     sim_x = sim_x * rescaling_factor
     return rescaling_factor
 
-# function to time limit the function to create a random PNC
-class TimeoutException(Exception): pass
-
-@contextmanager
-def time_limit(seconds):
-    def signal_handler(signum, frame):
-        raise TimeoutException("Timed out!")
-    signal.signal(signal.SIGALRM, signal_handler)
-    signal.alarm(seconds)
-    try:
-        yield
-    finally:
-        signal.alarm(0)
-
 # define the function to be looped
 def get_candidate_soq_residual(cand):
     """
@@ -169,14 +154,17 @@ def get_candidate_soq_residual(cand):
     scells_for_one_soq = pnc_params['scells_for_one_soq']
     for i_traj in range(1, scells_for_one_soq+1):
         rand_n = np.random.randint(1000000)
-        # Make one PNC unit cell with timelimit of 300 seconds
-        try:
-            with time_limit(300):
-                _, pnc_astr = np_box_obj.get_rand_pnc_traj(i_traj, rand_n,
-                                                   write_trajectory=False,
-                                                   return_structure=True)
-        except TimeoutException as e:
-            print("Timed out!")
+        # NOTE: This step sometimes takes too long. 
+        # So, for the first 3 attempts, check if time taken 
+        # to make one PNC is more than 100 secs, 
+        # then cancel this candidate and return -1
+        start_time = time.time()
+        _, pnc_astr = np_box_obj.get_rand_pnc_traj(i_traj, rand_n,
+                                            write_trajectory=False,
+                                            return_structure=True)
+        if i_traj < 4 and time.time() - start_time > 100:
+            with open('time_taken.txt', 'w') as f:
+                f.write('{}'.format(time.time() - start_time))
             return -1
         pnc_scell = np_box_obj.increase_pnc_size(pnc_astr, size=scell_size,
                                                  alter_cells=True)
@@ -188,7 +176,7 @@ def get_candidate_soq_residual(cand):
     with open(soq_input_file) as f:
         lines = f.readlines()
     lines[1] = 'endStep {}\n'.format(scells_for_one_soq*1000)
-    lines[3] = 'initStep 1000'
+    lines[3] = 'initStep 1000\n'
     to_file = candidate_dir + '/in.soq'
     with open(to_file, 'w') as f:
         f.writelines(lines)
@@ -482,5 +470,6 @@ def get_chi_squared_stat(rescaling_factor, candidate_dir, pnc_params, plot=False
         plt.text(0.11, 0.1, r'$\chi^{}$ : {:.3f}'.format(2, weighted_chisquared), fontsize=14)
         plt.legend(['Exp. S(q)', 'Sim. S(q)'])
         plt.savefig(candidate_dir + '/soq_plot.png')
+        plt.close()
 
     return weighted_chisquared
