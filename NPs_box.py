@@ -43,6 +43,8 @@ class nanoparticles_box(object):
 
     def get_dia_NP(self):
         """
+        Function to get the diameter randomly from a normal distribution with 
+        user specified mean and sigma.
         """
         found = False
         while not found:
@@ -53,6 +55,8 @@ class nanoparticles_box(object):
 
     def get_box_latt(self):
         """
+        Function to get a box shaped lattice object considering user-provided 
+        volume fraction or box_len if available. 
         """
         if self.n_NPs is not None:
             # volume of NPs
@@ -83,11 +87,13 @@ class nanoparticles_box(object):
 
     def get_rand_frac_coords(self, curr_NP_coords=None, coords_are_cartesian=True, curr_dia_NPs=None):
         """
+
         """
         random_coords = []
         dia_NPs = []
         NPs_needed = self.n_NPs
         NPs_added = 0
+        # Check if any coords already provided. Then, add them to the list and search for the difference
         if curr_NP_coords is not None:
             random_coords = list(curr_NP_coords)
             if coords_are_cartesian:
@@ -100,10 +106,13 @@ class nanoparticles_box(object):
             NPs_added = len(random_coords)
             NPs_needed = self.n_NPs - NPs_added
 
+
         new_loc_tries = 0
+        # Do finite attepts to find a new coordinate that is not too close with existing set of coordinates.
         while NPs_added < NPs_needed - 1 and new_loc_tries < NPs_needed+100:
             new_loc_tries += 1
             if len(random_coords) == 0:
+                # Sample the first coordinate 
                 new_fracs = [unif(0, 1), unif(0, 1), unif(0, 1)]
                 dia_NP = self.get_dia_NP()
                 dia_NPs.append(dia_NP)
@@ -116,6 +125,7 @@ class nanoparticles_box(object):
             while not added_new_fracs and num_tries < 500:
                 num_tries += 1
                 # Get the next new_fracs
+                # Sample a random coordiante from entire box
                 new_fracs = [unif(0, 1), unif(0, 1), unif(0, 1)]
                 new_carts = self.box_latt.get_cartesian_coords(new_fracs)
                 dia_NP = self.get_dia_NP()
